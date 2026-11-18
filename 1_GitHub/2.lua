@@ -8286,10 +8286,10 @@ function ESP.AttachTimers()
 end
 
 function ESP.Start()
-  if ESP.bActive then return end
+  -- Idempotent: even when already active, re-check the controller/timer after a match transition.
   ESP.bActive = true
   pcall(ESP.Update)
-  ESP.AttachTimers()
+  pcall(ESP.AttachTimers)
 end
 
 _G.ESP = ESP
@@ -8303,27 +8303,44 @@ local function ESPLater(sec, fn)
 end
 
 local _ESPStartedPC = nil
+local _ESPWatchdogRunning = false
 local function ESPStartAll()
   pcall(function()
     local pc = nil
     if slua_GameFrontendHUD then pc = slua_GameFrontendHUD:GetPlayerController() end
     if not ESPValid(pc) then pc = ESP.GetController() end
+
     if ESPValid(pc) then
       if pc ~= _ESPStartedPC then
+        -- A new match commonly creates a new controller/canvas. Drop stale references
+        -- before binding the renderer to the new controller.
         _ESPStartedPC = pc
+        ESP._pc, ESP._pcT = pc, ESP.Now()
+        pcall(ESP.ResetWidgets)
         ESP._TimerHooked = false
         ESP._TimerPC = nil
-        ESP.Start()
-      else
-        ESP.AttachTimers()
+        ESP._lastTick = -1e9
+        ESP.LastScan = -999.0
+        ESP.LastTransform = -999.0
       end
+      ESP.Start()
+    else
+      -- Do not retain a dead controller across lobby/loading transitions.
+      ESP._pc, ESP._pcT = nil, nil
+      ESP._TimerHooked = false
+      ESP._TimerPC = nil
     end
   end)
+
+  -- Keep watching for lobby -> match -> next match controller replacements.
+  if _ESPWatchdogRunning then
+    ESPLater(2.0, ESPStartAll)
+  end
 end
 
 pcall(function()
+  _ESPWatchdogRunning = true
   ESPStartAll()
-  ESPLater(1.0, ESPStartAll)
 end)
 if not _G.__ESPLookTickStarted then
   _G.__ESPLookTickStarted = true
